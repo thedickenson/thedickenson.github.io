@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kinetic Particle Network — one file, no libraries</title>
+  <style>
+    :root{
+      --bg: #0b0f19;
+      --fg: #dbeafe;
+    }
+    html,body{height:100%;}
+    body{
+      margin:0;
+      background: radial-gradient(1200px 800px at 20% 10%, #0f172a 0%, var(--bg) 60%);
+      color:var(--fg);
+      font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+      overflow:hidden;
+    }
+    #c{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+    .hud{
+      position:fixed; inset:auto 12px 12px auto; color:#9fb3d3; user-select:none;
+      background:rgba(12,18,34,.28); backdrop-filter: blur(6px);
+      border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:10px 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .hud b{ color:#e2e8f0; }
+    .hud kbd{ background:#111827; border:1px solid #1f2937; border-bottom-color:#111827; padding:2px 6px; border-radius:6px; font-size:12px; }
+    .brand{ position:fixed; left:12px; bottom:12px; color:#7aa2ff; opacity:.8; letter-spacing:.4px }
+    a{ color:#a5b4fc; text-decoration:none }
+    a:hover{ text-decoration:underline }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">Kinetic Particle Network — <b>move</b> your mouse, <kbd>click</kbd> to burst, <kbd>space</kbd> to pause.</div>
+<div class="brand">1-file demo</div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  let W, H, paused = false;
+
+  const settings = {
+    count: 140,          // number of particles
+    linkDist: 110,       // max distance to draw a link
+    maxSpeed: 0.7,       // base particle speed
+    pulse: true,         // hue pulsing
+    trails: 0.08         // 0: no trails, 1: full trails
+  };
+
+  const mouse = { x: 0, y: 0, active: false };
+
+  function resize(){
+    W = canvas.width = Math.floor(innerWidth * DPR);
+    H = canvas.height = Math.floor(innerHeight * DPR);
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+  }
+  addEventListener('resize', resize, {passive:true});
+  resize();
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  class Particle{
+    constructor(){ this.reset(true); }
+    reset(randomPos=false){
+      this.x = randomPos ? rand(0,W) : (mouse.x||W/2);
+      this.y = randomPos ? rand(0,H) : (mouse.y||H/2);
+      const ang = rand(0, Math.PI*2);
+      const spd = rand(0.2, settings.maxSpeed);
+      this.vx = Math.cos(ang)*spd; this.vy = Math.sin(ang)*spd;
+      this.size = rand(1.1, 2.2) * DPR;
+    }
+    step(){
+      this.x += this.vx; this.y += this.vy;
+      // wrap around edges with small margin
+      const m = 20*DPR;
+      if (this.x < -m) this.x = W+m;
+      if (this.x > W+m) this.x = -m;
+      if (this.y < -m) this.y = H+m;
+      if (this.y > H+m) this.y = -m;
+    }
+    draw(){
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  const particles = Array.from({length: settings.count}, () => new Particle());
+
+  // Interaction
+  canvas.addEventListener('pointermove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - rect.left) * DPR;
+    mouse.y = (e.clientY - rect.top) * DPR;
+    mouse.active = true;
+  });
+  canvas.addEventListener('pointerleave', () => mouse.active = false);
+  canvas.addEventListener('click', () => burst(mouse.x, mouse.y));
+  addEventListener('keydown', e => {
+    if (e.code === 'Space') paused = !paused;
+  });
+
+  function burst(x, y){
+    // recycle 24 random particles near click, shoot outward
+    for (let i=0;i<24;i++){
+      const p = particles[(Math.random()*particles.length)|0];
+      p.x = x + rand(-8,8)*DPR; p.y = y + rand(-8,8)*DPR;
+      const a = Math.atan2(p.y - y, p.x - x) + rand(-0.6, 0.6);
+      const s = rand(settings.maxSpeed*2.2, settings.maxSpeed*4.0);
+      p.vx = Math.cos(a)*s; p.vy = Math.sin(a)*s;
+    }
+  }
+
+  function hue(t){
+    // smooth cycling hue: returns [r,g,b]
+    const k = (t*0.06) % 360; // slower cycle
+    const a = (1 + Math.sin((k*Math.PI)/180)) * 0.5; // 0..1
+    // blend two base colors
+    const c1 = [90, 200, 255];  // icy blue
+    const c2 = [180, 120, 255]; // violet
+    return [
+      (c1[0]*(1-a) + c2[0]*a)|0,
+      (c1[1]*(1-a) + c2[1]*a)|0,
+      (c1[2]*(1-a) + c2[2]*a)|0,
+    ];
+  }
+
+  let t = 0;
+  function frame(){
+    if (!paused){
+      t++;
+      // trails via translucent rect
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(11,15,25,${settings.trails})`; // match bg
+      ctx.fillRect(0,0,W,H);
+
+      const [r,g,b] = settings.pulse ? hue(t) : [130,170,255];
+
+      // draw links first
+      ctx.lineWidth = 0.8 * DPR;
+      for (let i=0;i<particles.length;i++){
+        const p = particles[i];
+        for (let j=i+1;j<particles.length;j++){
+          const q = particles[j];
+          const dx = p.x - q.x, dy = p.y - q.y;
+          const d2 = dx*dx + dy*dy;
+          const maxD = settings.linkDist * DPR;
+          if (d2 < maxD*maxD){
+            const d = Math.sqrt(d2);
+            const alpha = (1 - d/maxD) * 0.8;
+            ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // gentle mouse gravity
+      if (mouse.active){
+        for (const p of particles){
+          const dx = mouse.x - p.x, dy = mouse.y - p.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          const pull = Math.min(0.03 * DPR, 14/dist);
+          p.vx += (dx/dist) * pull * 0.04;
+          p.vy += (dy/dist) * pull * 0.04;
+        }
+      }
+
+      // draw particles
+      ctx.fillStyle = `rgba(${r},${g},${b},.95)`;
+      for (const p of particles){ p.step(); p.draw(); }
+
+      // glow pass (additive)
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.shadowBlur = 12 * DPR;
+      ctx.shadowColor = `rgba(${r},${g},${b},0.6)`;
+      ctx.fillStyle = `rgba(${r},${g},${b},0.35)`;
+      for (const p of particles){ p.draw(); }
+      ctx.shadowBlur = 0; ctx.globalCompositeOperation = 'source-over';
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // seed a subtle opening burst
+  setTimeout(()=> burst(W/2, H/2), 300);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
