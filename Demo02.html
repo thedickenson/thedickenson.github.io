@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro CRT Terminal - Wireframe Terrain</title>
+    <style>
+        /* Base reset for a pure fullscreen experience */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #010a01; /* Very dark green-black */
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        /* Container to hold the canvas and apply relative positioning for overlays */
+        #terminal-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #010a01;
+        }
+
+        /* The 3D wireframe canvas */
+        #gridCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            z-index: 1;
+        }
+
+        /* 
+         * CRT EFFECT 1: Scanlines 
+         * Creates thin horizontal lines that cover the screen 
+         */
+        .scanlines {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none; /* Let mouse interact with canvas */
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0, 0, 0, 0.25) 50%,
+                rgba(0, 0, 0, 0.25)
+            );
+            background-size: 100% 4px;
+        }
+
+        /* 
+         * CRT EFFECT 2: Rolling Flicker/Refresh Bar
+         * Simulates the slow vertical refresh line of an old monitor
+         */
+        .refresh-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 15vh;
+            background: linear-gradient(
+                to bottom,
+                rgba(0, 255, 65, 0) 0%,
+                rgba(0, 255, 65, 0.08) 50%,
+                rgba(0, 255, 65, 0) 100%
+            );
+            z-index: 11;
+            pointer-events: none;
+            animation: scanline 8s linear infinite;
+        }
+
+        @keyframes scanline {
+            0% { transform: translateY(-20vh); }
+            100% { transform: translateY(120vh); }
+        }
+
+        /* 
+         * CRT EFFECT 3: Vignette & Screen Curvature
+         * Darkens the edges and adds an inset shadow to simulate the glass curve
+         */
+        .vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 12;
+            pointer-events: none;
+            background: radial-gradient(circle at center, transparent 50%, rgba(0, 5, 0, 0.9) 100%);
+            box-shadow: inset 0 0 100px rgba(0,0,0,0.9);
+        }
+
+        /* Terminal Text Overlay */
+        .terminal-text {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            z-index: 15;
+            color: #00ff41; /* Classic phosphor green */
+            pointer-events: none;
+            text-shadow: 0 0 5px #00ff41, 0 0 10px #00ff41;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            font-size: 14px;
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 15px;
+            background-color: #00ff41;
+            animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Main Container -->
+    <div id="terminal-container">
+        <!-- 3D Canvas -->
+        <canvas id="gridCanvas"></canvas>
+        
+        <!-- UI Overlays -->
+        <div class="scanlines"></div>
+        <div class="refresh-bar"></div>
+        <div class="vignette"></div>
+        
+        <!-- Decorative Text -->
+        <div class="terminal-text" id="terminal-output">
+            <span>SYS.INIT V.2.0.4</span>
+            <span>> INITIALIZING GRID... <span style="color:#fff">OK</span></span>
+            <span>> ESTABLISHING UPLINK... <span style="color:#fff">OK</span></span>
+            <span>> MOUNTING TERRAIN...</span>
+            <span>> <span class="cursor"></span></span>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gridCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Colors
+        const THEME_COLOR = '#00ff41'; // Bright terminal green
+        
+        // Grid Configuration
+        const FOV = 400; // Field of view (higher = narrower perspective)
+        const GRID_SPACING = 80; // Distance between grid lines
+        const GRID_COLUMNS = 40; // How many lines wide
+        const GRID_DEPTH = 50;   // How many lines deep into the screen
+        
+        // World State
+        let worldZOffset = 0; // Tracks forward movement
+        
+        // Interactive Camera Settings
+        const camera = {
+            x: 0,
+            y: -150, // Height of the camera above the terrain
+            z: 0,
+            targetX: 0,
+            targetY: -150,
+            speed: 3 // Forward flight speed
+        };
+
+        // Resize Canvas to fit screen
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        
+        // Mouse Interaction
+        // Moving the mouse shifts the camera's X position (strafing) and Y position (altitude),
+        // and changes the forward speed dynamically.
+        window.addEventListener('mousemove', (e) => {
+            // Normalize mouse coordinates from -1 to 1
+            const normX = (e.clientX / window.innerWidth) * 2 - 1;
+            const normY = (e.clientY / window.innerHeight) * 2 - 1;
+
+            // Shift perspective
+            camera.targetX = normX * 600; // Look left/right
+            
+            // Map altitude and speed to mouse Y
+            // Mouse up: fly higher and faster
+            // Mouse down: fly lower and slower
+            camera.targetY = -150 + (normY * 100); 
+            camera.speed = 3 + (-normY * 3); // Speed ranges from 0 to 6
+        });
+
+        // Touch support for mobile interactions
+        window.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                const normX = (e.touches[0].clientX / window.innerWidth) * 2 - 1;
+                const normY = (e.touches[0].clientY / window.innerHeight) * 2 - 1;
+                camera.targetX = normX * 400;
+                camera.speed = 3 + (-normY * 2);
+            }
+        });
+
+
+        /**
+         * Projects a 3D coordinate (x, y, z) to a 2D canvas coordinate (x2d, y2d)
+         */
+        function project3D(x, y, z) {
+            // Adjust coordinates relative to the camera
+            const dx = x - camera.x;
+            const dy = y - camera.y;
+            const dz = z - camera.z;
+
+            // If the point is behind the camera, do not render it
+            if (dz <= 0) return null;
+
+            // Perspective division
+            const scale = FOV / dz;
+            
+            // Center the projection on the screen
+            const x2d = (canvas.width / 2) + (dx * scale);
+            const y2d = (canvas.height / 2) + (dy * scale);
+
+            return { x: x2d, y: y2d, scale: scale };
+        }
+
+        /**
+         * Procedural Terrain Generator
+         * Creates a "trench" effect: flat in the center, mountainous on the edges.
+         * Uses sine waves to simulate random organic peaks.
+         */
+        function getTerrainHeight(x, z) {
+            // 1. Calculate how far the point is from the center path
+            const distanceToCenter = Math.abs(x);
+            
+            // 2. Create a flat trench in the middle (width of ~400 units)
+            let baseHeight = 0;
+            if (distanceToCenter > 400) {
+                // Sharply slope upwards as we move away from the center
+                baseHeight = (distanceToCenter - 400) * 0.4;
+            }
+
+            // 3. Add procedural noise (mountains) using combining sine waves
+            // We use the absolute world Z (z + worldZOffset) so the terrain remains stable as we fly over it
+            const worldZ = z + worldZOffset;
+            
+            // Only add noise to the mountainous edges, keep the center trench smooth
+            let noise = 0;
+            if (distanceToCenter > 200) {
+                const noiseIntensity = Math.min(1, (distanceToCenter - 200) / 400); // Fade in the noise
+                noise = (Math.sin(x * 0.01) + Math.cos(worldZ * 0.015)) * 60 * noiseIntensity
+                      + (Math.sin(x * 0.05) * Math.cos(worldZ * 0.05)) * 20 * noiseIntensity;
+            }
+
+            // Note: Canvas Y is positive downwards. So a negative height visually goes "up" (mountains).
+            return -(baseHeight + noise); 
+        }
+
+
+        function drawWireframe() {
+            // Smoothly interpolate camera position towards the target (easing)
+            camera.x += (camera.targetX - camera.x) * 0.05;
+            camera.y += (camera.targetY - camera.y) * 0.05;
+
+            // Move the world forward by increasing the offset based on speed
+            worldZOffset += camera.speed;
+
+            // Clear the canvas. Instead of clearRect, we fill with a highly transparent black
+            // to create a slight motion blur / glowing phosphor trail effect.
+            ctx.fillStyle = 'rgba(1, 10, 1, 0.4)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Calculate grid bounds
+            const startX = -((GRID_COLUMNS / 2) * GRID_SPACING);
+            const endX = (GRID_COLUMNS / 2) * GRID_SPACING;
+            const maxZ = GRID_DEPTH * GRID_SPACING;
+
+            // To handle infinite scrolling, we keep local Z from 0 to maxZ.
+            // As worldZOffset grows, we shift the local Z coordinates to snap to grid lines.
+            // This prevents floating point errors and keeps the loop bounded.
+            const zShift = worldZOffset % GRID_SPACING;
+
+            ctx.lineWidth = 1.5;
+            
+            // Add terminal glow effect
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = THEME_COLOR;
+
+            // Render from BACK to FRONT for proper depth perception and alpha blending
+            for (let zIndex = GRID_DEPTH; zIndex > 0; zIndex--) {
+                
+                // Calculate actual distance from camera
+                const localZ = (zIndex * GRID_SPACING) - zShift;
+                
+                // Calculate distance fog (alpha fades out in the distance)
+                let alpha = 1 - (localZ / maxZ);
+                // Boost alpha slightly to keep lines visible longer
+                alpha = Math.max(0, Math.min(1, alpha * 1.5)); 
+                
+                ctx.strokeStyle = `rgba(0, 255, 65, ${alpha})`;
+                ctx.beginPath();
+
+                // 1. Draw Horizontal Lines (X-axis)
+                for (let x = startX; x <= endX; x += GRID_SPACING) {
+                    const y = getTerrainHeight(x, localZ);
+                    const projected = project3D(x, y, localZ);
+                    
+                    if (projected) {
+                        if (x === startX) {
+                            ctx.moveTo(projected.x, projected.y);
+                        } else {
+                            ctx.lineTo(projected.x, projected.y);
+                        }
+                    }
+                }
+                ctx.stroke();
+
+                // 2. Draw Depth Lines (Z-axis) connecting to the next layer forward
+                if (zIndex < GRID_DEPTH) {
+                    ctx.beginPath();
+                    const nextLocalZ = ((zIndex + 1) * GRID_SPACING) - zShift;
+                    
+                    for (let x = startX; x <= endX; x += GRID_SPACING) {
+                        const y1 = getTerrainHeight(x, localZ);
+                        const p1 = project3D(x, y1, localZ);
+                        
+                        const y2 = getTerrainHeight(x, nextLocalZ);
+                        const p2 = project3D(x, y2, nextLocalZ);
+
+                        if (p1 && p2) {
+                            ctx.moveTo(p1.x, p1.y);
+                            ctx.lineTo(p2.x, p2.y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+            }
+
+            // Reset shadow to prevent it applying heavily to the clearRect rect
+            ctx.shadowBlur = 0; 
+        }
+
+
+        // Boot sequence logic to simulate a terminal waking up
+        let bootSequenceText = [
+            "SYS.INIT V.2.0.4",
+            "> INITIALIZING GRID... OK",
+            "> ESTABLISHING UPLINK... OK",
+            "> MOUNTING TERRAIN...",
+            "> RENDERING ENVIRONMENT...",
+            "> SYSTEM ONLINE."
+        ];
+        
+        function animateBootText() {
+            const output = document.getElementById('terminal-output');
+            let lines = 1;
+            
+            const interval = setInterval(() => {
+                if(lines >= bootSequenceText.length) {
+                    clearInterval(interval);
+                    return;
+                }
+                
+                // Keep previous lines, add new one, append cursor
+                let html = '';
+                for(let i=0; i<=lines; i++) {
+                    html += `<span>${bootSequenceText[i]}</span>`;
+                }
+                html += `<span>> <span class="cursor"></span></span>`;
+                output.innerHTML = html;
+                
+                lines++;
+            }, 800); // Add a new line every 800ms
+        }
+
+        // Main animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            drawWireframe();
+        }
+
+        // Start everything
+        animateBootText();
+        animate();
+
+    </script>
+</body>
+</html>

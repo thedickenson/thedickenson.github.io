@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyperspace Warp Simulation</title>
+    
+    <style>
+        /* Reset margins and ensure full screen layout */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000000; /* Deep space black */
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+        }
+
+        /* The canvas covers the entire screen */
+        #warpCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            z-index: 1;
+        }
+
+        /* Cinematic vignette to darken the edges and draw focus to the center */
+        .vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, transparent 30%, rgba(0, 0, 0, 0.85) 100%);
+            pointer-events: none; /* Let mouse events pass through to canvas */
+            z-index: 2;
+        }
+
+        /* UI Overlay for context and instructions */
+        .ui-overlay {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            z-index: 3;
+            color: rgba(255, 255, 255, 0.6);
+            pointer-events: none;
+            letter-spacing: 0.2em;
+            font-size: 14px;
+            font-weight: 300;
+            text-transform: uppercase;
+            animation: pulse 3s infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.3; }
+            100% { opacity: 0.8; }
+        }
+        
+        .speed-indicator {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            color: #00ffff;
+            font-family: monospace;
+            font-size: 16px;
+            z-index: 3;
+            pointer-events: none;
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="warpCanvas"></canvas>
+    <div class="vignette"></div>
+    
+    <div class="speed-indicator" id="speedReadout">WARP FACTOR: 1.0</div>
+    <div class="ui-overlay">
+        MOVE CURSOR TO STEER &bull; CLICK AND HOLD FOR HYPERDRIVE
+    </div>
+
+    <script>
+        const canvas = document.getElementById('warpCanvas');
+        const ctx = canvas.getContext('2d');
+        const speedReadout = document.getElementById('speedReadout');
+
+        // Dimensions
+        let width, height;
+        let centerX, centerY;
+        
+        // Perspective settings
+        const FOV = 400; // Field of View
+        const MAX_DEPTH = 3000; // How far back stars spawn
+        const STAR_COUNT = 1500;
+        
+        // Speed controls
+        let baseSpeed = 8;
+        let hyperSpeed = 120;
+        let currentSpeed = baseSpeed;
+        let targetSpeed = baseSpeed;
+
+        // Interaction state
+        const mouse = { x: null, y: null };
+        let targetCenterX, targetCenterY;
+        let isHyperdrive = false;
+
+        // Colors (Cyan, Magenta, Pure White, Light Blue)
+        const colors = [
+            { r: 0, g: 255, b: 255 },   // Cyan
+            { r: 255, g: 0, b: 255 },   // Magenta
+            { r: 255, g: 255, b: 255 }, // White
+            { r: 200, g: 230, b: 255 }  // Ice Blue
+        ];
+
+        let stars = [];
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            
+            // Set initial vanishing point to center of screen
+            centerX = width / 2;
+            centerY = height / 2;
+            
+            if (targetCenterX === undefined) {
+                targetCenterX = centerX;
+                targetCenterY = centerY;
+            }
+        }
+        
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Track mouse movement to shift perspective
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            // Shift the target center slightly based on mouse position
+            // We map the mouse position to a constrained shift area
+            let shiftX = (mouse.x - width / 2) * 0.5;
+            let shiftY = (mouse.y - height / 2) * 0.5;
+            targetCenterX = (width / 2) + shiftX;
+            targetCenterY = (height / 2) + shiftY;
+        });
+
+        window.addEventListener('touchmove', (e) => {
+            if(e.touches.length > 0) {
+                let tx = e.touches[0].clientX;
+                let ty = e.touches[0].clientY;
+                let shiftX = (tx - width / 2) * 0.5;
+                let shiftY = (ty - height / 2) * 0.5;
+                targetCenterX = (width / 2) + shiftX;
+                targetCenterY = (height / 2) + shiftY;
+            }
+        });
+
+        // Trigger hyperdrive on mouse down / touch start
+        window.addEventListener('mousedown', () => { isHyperdrive = true; });
+        window.addEventListener('mouseup', () => { isHyperdrive = false; });
+        window.addEventListener('touchstart', () => { isHyperdrive = true; });
+        window.addEventListener('touchend', () => { isHyperdrive = false; });
+
+        // Reset center when mouse leaves window
+        window.addEventListener('mouseout', () => {
+            targetCenterX = width / 2;
+            targetCenterY = height / 2;
+            isHyperdrive = false;
+        });
+
+        class Star {
+            constructor() {
+                this.reset(true);
+            }
+
+            reset(initial = false) {
+                // Distribute stars over a large 3D volume
+                // The spread depends on MAX_DEPTH and FOV to ensure they fill the screen
+                let spread = MAX_DEPTH * 2;
+                this.x = (Math.random() - 0.5) * spread;
+                this.y = (Math.random() - 0.5) * spread;
+                
+                // If initial setup, scatter them across all depths. 
+                // If resetting during animation, spawn them at the very back.
+                this.z = initial ? Math.random() * MAX_DEPTH : MAX_DEPTH;
+                
+                // Previous Z is used to draw the stretch/trail effect
+                this.pz = this.z;
+                
+                // Pick a random glowing color
+                this.color = colors[Math.floor(Math.random() * colors.length)];
+            }
+
+            update() {
+                // Save previous Z for line drawing
+                this.pz = this.z;
+                
+                // Move star closer to the camera (decrease Z)
+                this.z -= currentSpeed;
+
+                // If the star passes the camera (Z <= 0), reset it to the back
+                if (this.z < 1) {
+                    this.reset();
+                    // Prevent giant jump lines on reset by syncing previous Z
+                    this.pz = this.z; 
+                }
+            }
+
+            draw() {
+                // Project 3D coordinates to 2D screen space
+                // Formula: (x / z) * FOV + center
+                
+                // Avoid division by zero
+                if (this.z < 1) return;
+
+                // Current 2D position
+                let sx = (this.x / this.z) * FOV + centerX;
+                let sy = (this.y / this.z) * FOV + centerY;
+
+                // Previous 2D position (where the star was last frame)
+                let px = (this.x / this.pz) * FOV + centerX;
+                let py = (this.y / this.pz) * FOV + centerY;
+
+                // If the star is completely off-screen, don't waste time drawing it
+                if (
+                    sx < 0 || sx > width || sy < 0 || sy > height ||
+                    px < 0 || px > width || py < 0 || py > height
+                ) {
+                    // It's offscreen, but we don't reset it yet unless z < 1 
+                    // to maintain the illusion of depth at the edges.
+                    return; 
+                }
+
+                // Calculate size and opacity based on depth
+                // Closer = bigger and brighter, Further = smaller and faded
+                let depthRatio = 1 - (this.z / MAX_DEPTH);
+                let size = depthRatio * 2.5 + 0.5; // Stars range from 0.5 to 3px thick
+                let opacity = depthRatio * 1.5; // Allow slight overdrive on opacity for glow
+
+                ctx.lineWidth = size;
+                ctx.strokeStyle = `rgba(${this.color.r}, ${this.color.g}, ${this.color.b}, ${opacity})`;
+                
+                ctx.beginPath();
+                // If moving at high speed, stretch the line to its previous position
+                // If moving slow, just draw a very short line or a dot.
+                ctx.moveTo(px, py);
+                ctx.lineTo(sx, sy);
+                ctx.stroke();
+            }
+        }
+
+        function initStars() {
+            stars = [];
+            for (let i = 0; i < STAR_COUNT; i++) {
+                stars.push(new Star());
+            }
+        }
+        
+        initStars();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Smoothly interpolate target speed based on hyperdrive state
+            targetSpeed = isHyperdrive ? hyperSpeed : baseSpeed;
+            // Easing function for smooth acceleration/deceleration
+            currentSpeed += (targetSpeed - currentSpeed) * 0.05;
+
+            // 2. Update UI readout
+            let warpFactor = (currentSpeed / baseSpeed).toFixed(2);
+            speedReadout.innerText = `WARP FACTOR: ${warpFactor}`;
+            if (isHyperdrive) {
+                speedReadout.style.color = '#ff00ff';
+                speedReadout.style.textShadow = '0 0 15px #ff00ff';
+            } else {
+                speedReadout.style.color = '#00ffff';
+                speedReadout.style.textShadow = '0 0 10px #00ffff';
+            }
+
+            // 3. Smoothly pan the vanishing point center based on mouse
+            centerX += (targetCenterX - centerX) * 0.05;
+            centerY += (targetCenterY - centerY) * 0.05;
+
+            // 4. Clear the canvas
+            // Instead of a full clear, we could use fillRect with low opacity for trails,
+            // but for a clean lightspeed line effect, clearing and drawing distinct lines from (pz) is better.
+            ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+            ctx.fillRect(0, 0, width, height);
+
+            // Use 'lighter' blend mode for an additive color mixing effect (creates glow when stars overlap)
+            ctx.globalCompositeOperation = 'lighter';
+
+            // 5. Update and draw all stars
+            for (let i = 0; i < stars.length; i++) {
+                stars[i].update();
+                stars[i].draw();
+            }
+            
+            // Reset composite operation
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        animate();
+
+    </script>
+</body>
+</html>
